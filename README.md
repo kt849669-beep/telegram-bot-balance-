@@ -2,7 +2,9 @@
 
 The existing 14-site Telegram bot and its matching white/black Mini App, packaged for persistent Linux VPS hosting with Cloudflare HTTPS and a separately configured mobile proxy.
 
-**Deployment status:** source and deployment configuration prepared; no VPS has been provisioned and no production URL is live from this repository yet. GitHub stores the code; it does not run the bot. Cloudflare Workers & Pages alone does not run this existing polling/filesystem/OCR workflow.
+**Deployment status (28 September 2026):** bot and Mini App deployed on a Linux VPS with a dedicated Cloudflare Tunnel at [miniapp.app-showpay.in](https://miniapp.app-showpay.in/). Open the Mini App through the Telegram bot's menu using an authorized Telegram account. GitHub stores the code; the VPS runs the services.
+
+The VPS passed all 23 automated tests, a real ShowPay login/balance check through an India Reliance Jio proxy exit, public HTTPS authentication and command-bridge checks, and a service restart with account/history files preserved. Existing VPS applications and the main domain's DNS records were left unchanged. The mobile proxy is a rotating product: the verified Jio exit is not a permanent carrier guarantee.
 
 ## Included
 
