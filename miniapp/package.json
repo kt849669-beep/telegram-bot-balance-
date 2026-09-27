@@ -1,0 +1,8 @@
+{
+  "name": "master-control-miniapp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first Telegram dashboard for the existing Master Control bot",
+  "scripts": { "start": "node server.cjs", "demo": "node server.cjs --demo", "test": "node --test test/*.test.cjs" },
+  "engines": { "node": ">=22" }
+}
