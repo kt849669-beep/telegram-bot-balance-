@@ -1,1 +1,35 @@
-
+const {test}=require('node:test');
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const os=require('node:os');
+const path=require('node:path');
+const crypto=require('node:crypto');
+const http=require('node:http');
+const {validateTelegram}=require('../lib/auth.cjs');
+const {Jobs,Gate}=require('../lib/jobs.cjs');
+const {Ledger,dayOf}=require('../lib/ledger.cjs');
+const {makeServer}=require('../server.cjs');
+const {demoAdapter}=require('../lib/adapter.cjs');
+const temp=()=>fs.mkdtempSync(path.join(os.tmpdir(),'mc-test-'));
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+function signed(user=123,age=0){const p=new URLSearchParams({auth_date:String(Math.floor(Date.now()/1000)-age),query_id:'test',user:JSON.stringify({id:user})});const data=[...p].sort(([a],[b])=>a.localeCompare(b)).map(([k,v])=>`${k}=${v}`).join('\n');const key=crypto.createHmac('sha256','WebAppData').update('fixture-token').digest();p.set('hash',crypto.createHmac('sha256',key).update(data).digest('hex'));return p.toString();}
+test('Telegram signature, freshness, allowlist and duplicate fields',()=>{assert.deepEqual(validateTelegram(signed(),'fixture-token',[123]),{id:'123'});assert.equal(validateTelegram(signed(),'wrong-token',[123]),null);assert.equal(validateTelegram(signed(124),'fixture-token',[123]),null);assert.equal(validateTelegram(signed(123,600),'fixture-token',[123]),null);assert.equal(validateTelegram(signed(123,-100),'fixture-token',[123]),null);assert.equal(validateTelegram(signed()+'&user=%7B%22id%22%3A124%7D','fixture-token',[123]),null);});
+test('daily reports use last reading in India day and never invent a baseline',()=>{const ledger=new Ledger(temp());ledger.add('a',100,'2026-09-25T17:00:00Z');ledger.add('a',125,'2026-09-25T19:00:00Z');ledger.add('a',140,'2026-09-26T10:00:00Z');ledger.add('b',30,'2026-09-26T11:00:00Z');assert.equal(dayOf('2026-09-25T19:00:00Z'),'2026-09-26');const rows=ledger.report('2026-09-26');assert.equal(rows.find(r=>r.id==='a').change,40);assert.equal(rows.find(r=>r.id==='b').change,null);assert.equal(new Ledger(path.dirname(ledger.file)).entries.length,4);});
+test('repeat clicks share a job and deferred accounts run after first pass',async()=>{const seen=[],counts={};const adapter={check:async r=>{seen.push(r.id);counts[r.id]=(counts[r.id]||0)+1;await sleep(4);return r.id==='a'&&counts.a===1?{success:false,retryable:true}:{success:true,balance:50};}};const jobs=new Jobs(adapter,new Ledger(temp()),{pause:1});const rows=['a','b','c'].map(id=>({id,siteId:'s',password:'fixture'}));const first=jobs.start('u','all',rows),second=jobs.start('u','all',rows);assert.equal(second.reused,true);assert.equal(first.job.id,second.job.id);for(let i=0;i<100&&jobs.active.size;i++)await sleep(5);const job=jobs.list('u')[0];assert.equal(job.checked,3);assert.equal(job.completed,3);assert.equal(job.repeatClicks,1);assert.equal(seen.indexOf('a',1),3);assert.equal(job.status,'completed');});
+test('different commands share overlapping account requests without losing counts',async()=>{let n=0;const adapter={check:async()=>{n++;await sleep(20);return {success:true,balance:1,loginToken:'NEVER_EXPOSE'};}};const jobs=new Jobs(adapter,new Ledger(temp()),{pause:1});const row={id:'a',siteId:'s',password:'fixture'};jobs.start('u','all',[row]);jobs.start('u','top-10',[row]);for(let i=0;i<100&&jobs.active.size;i++)await sleep(5);assert.equal(n,1);assert.equal(jobs.list('u').length,2);assert.ok(jobs.list('u').every(j=>j.completed===1));assert.ok(!JSON.stringify(jobs.list('u')).includes('NEVER_EXPOSE'));});
+test('persistent temporary errors terminate after the retry pass and cover every ID',async()=>{const jobs=new Jobs({check:async()=>({success:false,retryable:true,error:'secret: fixture-password'})},new Ledger(temp()),{pause:1});jobs.start('u','all',[1,2,3,4].map(id=>({id:String(id),siteId:'s',password:'fixture'})));for(let i=0;i<100&&jobs.active.size;i++)await sleep(5);const j=jobs.list('u')[0];assert.equal(j.failed,4);assert.equal(j.retryPending,0);assert.equal(j.results.length,4);assert.ok(!JSON.stringify(j).includes('fixture-password'));});
+test('concurrency gate never exceeds its limit',async()=>{const gate=new Gate(3);let active=0,max=0;await Promise.all(Array.from({length:40},()=>gate.run(async()=>{active++;max=Math.max(max,active);await sleep(1);active--;})));assert.equal(max,3);assert.equal(gate.active,0);});
+test('same Top command keeps its running job even if account ranking changes',async()=>{const jobs=new Jobs({check:async()=>{await sleep(15);return {success:true,balance:1};}},new Ledger(temp()),{pause:1});const a=jobs.start('u','top-10',[{id:'a',siteId:'s'}]);const b=jobs.start('u','top-10',[{id:'b',siteId:'s'}]);assert.equal(a.job.id,b.job.id);assert.equal(b.reused,true);for(let i=0;i<100&&jobs.active.size;i++)await sleep(5);});
+test('local HTTP: no unauthenticated data, strict host/origin/CSRF, masked lists, MPIN reveal, no source write',async t=>{
+  const adapter=demoAdapter();const before=JSON.stringify(adapter.accounts());const app=makeServer({port:19001,adapter,dataDir:temp()});await new Promise(r=>app.server.listen(19001,'127.0.0.1',r));t.after(()=>app.server.close());const base='http://127.0.0.1:19001';
+  const headers={'Host':'127.0.0.1:19001','X-Miniapp-Request':'1','Content-Type':'application/json'};
+  let r=await fetch(base+'/api/overview',{headers});assert.equal(r.status,401);
+  r=await fetch(base+'/api/session',{method:'POST',headers:{...headers,Origin:'https://evil.example'},body:'{}'});assert.equal(r.status,403);
+  const badHost=await new Promise((resolve,reject)=>{const q=http.request(base+'/api/session',{method:'POST',headers:{...headers,Host:'evil.example'}},r=>{r.resume();resolve(r.statusCode);});q.on('error',reject);q.end('{}');});assert.equal(badHost,403);
+  r=await fetch(base+'/api/session',{method:'POST',headers,body:'{}'});assert.equal(r.status,200);const cookie=r.headers.get('set-cookie').split(';')[0];const {csrf}=await r.json();
+  const auth={...headers,Cookie:cookie,'X-CSRF-Token':csrf};
+  r=await fetch(base+'/api/accounts/search',{method:'POST',headers:{...auth,'X-CSRF-Token':'wrong'},body:'{}'});assert.equal(r.status,403);
+  r=await fetch(base+'/api/accounts/search',{method:'POST',headers:auth,body:JSON.stringify({query:'9000000000'})});const data=await r.json();assert.equal(data.rows.length,1);assert.ok(!JSON.stringify(data).includes('9000000000'));assert.ok(!JSON.stringify(data).includes('Demo-only'));assert.ok(!JSON.stringify(data).includes('001234'));
+  r=await fetch(base+'/api/account/reveal',{method:'POST',headers:auth,body:JSON.stringify({id:data.rows[0].id})});const secret=await r.json();assert.equal(secret.mpin,'001234');assert.equal(secret.phone,'9000000000');
+  assert.equal(JSON.stringify(adapter.accounts()),before);
+});
