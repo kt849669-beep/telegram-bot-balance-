@@ -1,0 +1,16 @@
+node_modules/
+.env
+.env.*
+!.env.example
+private/
+data/
+storage/
+*.log
+*.traineddata
+wallets*.json
+auth.json
+connection.json
+*.pem
+*.key
+*.zip
+.wrangler/

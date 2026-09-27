@@ -1,0 +1,15 @@
+.git
+node_modules
+private
+data
+storage
+.env
+.env.*
+*.log
+**/wallets*.json
+**/auth.json
+**/connection.json
+**/*.pem
+**/*.key
+**/*.traineddata
+.wrangler
