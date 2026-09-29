@@ -6,5 +6,5 @@ const {spawnSync}=require('node:child_process');
 const root=path.resolve(__dirname,'..');
 const fixtureDir=fs.mkdtempSync(path.join(os.tmpdir(),'master-control-deploy-test-'));
 const files=['miniapp/test/core.test.cjs','miniapp/test/mirror.test.cjs','miniapp/test/session.test.cjs','test/production.test.cjs'];
-const child=spawnSync(process.execPath,['--test',...files],{cwd:root,stdio:'inherit',windowsHide:true,env:{...process.env,BOT_DIR:path.join(root,'bot'),BOT_DATA_DIR:fixtureDir,BOT_TOKEN:'123456:fixture',ADMIN_PASSWORD:'synthetic-admin',SITE_PROXY_URL:'http://test-user:test-password@127.0.0.1:19299'}});
+const child=spawnSync(process.execPath,['--test',...files],{cwd:root,stdio:'inherit',windowsHide:true,env:{...process.env,BOT_DIR:path.join(root,'bot'),BOT_DATA_DIR:fixtureDir,BOT_TOKEN:'123456:fixture',ADMIN_PASSWORD:'synthetic-admin',SITE_NETWORK_MODE:'proxy',SITE_PROXY_URL:'http://test-user:test-password@127.0.0.1:19299'}});
 process.exitCode=child.status??1;
