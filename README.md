@@ -1,10 +1,10 @@
 # Telegram Bot + Mini App
 
-The existing 14-site Telegram bot and its matching white/black Mini App, packaged for persistent Linux VPS hosting with Cloudflare HTTPS and a separately configured mobile proxy.
+The existing 14-site Telegram bot and its matching white/black Mini App, packaged for persistent Linux VPS hosting with Cloudflare HTTPS and explicit direct or proxy connections to site APIs.
 
-**Deployment status (28 September 2026):** bot and Mini App deployed on a Linux VPS with a dedicated Cloudflare Tunnel at [miniapp.app-showpay.in](https://miniapp.app-showpay.in/). Open the Mini App through the Telegram bot's menu using an authorized Telegram account. GitHub stores the code; the VPS runs the services.
+**Deployment status (29 September 2026):** bot and Mini App deployed on a Linux VPS with a dedicated Cloudflare Tunnel at [miniapp.app-showpay.in](https://miniapp.app-showpay.in/). Outgoing site requests use direct IPv4 with `SITE_NETWORK_MODE=direct`. Open the Mini App through the Telegram bot's menu using an authorized Telegram account. GitHub stores the code; the VPS runs the services.
 
-The VPS passed all 23 automated tests, a real ShowPay login/balance check through an India Reliance Jio proxy exit, public HTTPS authentication and command-bridge checks, and a service restart with account/history files preserved. Existing VPS applications and the main domain's DNS records were left unchanged. The mobile proxy is a rotating product: the verified Jio exit is not a permanent carrier guarantee.
+An initial direct test with one saved account per site passed all 14 logins and balance reads. After deployment, the original `/balance` handler completed a 70-account sample with 40 successful checks and 30 failures. A separate one-attempt diagnostic with three accounts in flight received 9 successful balances, 60 temporary application errors and one account-attempt warning. Neither test detected a Cloudflare challenge. This verifies direct connectivity, not error-free bulk checking; further account retries were stopped after the warning. The routing change passes 25 automated checks. Existing bot handlers, saved data, other VPS applications, and the main domain's DNS configuration are preserved.
 
 ## Included
 
@@ -14,7 +14,7 @@ The VPS passed all 23 automated tests, a real ShowPay login/balance check throug
 - Dashboard with Check All, Top 10/50/100 rechecks, number/ID search, recorded balance changes, and summary exports.
 - Telegram-signed authentication, an authorized-user list, session renewal, CSRF/origin checks, and explicitly requested password/MPIN reveal.
 - Independent Mini App commands, duplicate-command coalescing, bounded temporary-error retries, and persistent balance observations.
-- Proxy routing for all 14 configured site APIs. Telegram traffic and local bridge downloads use their normal connections. There is no fallback from a failed site proxy to the VPS public IP.
+- Explicit direct IPv4 or proxy routing for all 14 configured site APIs. Telegram traffic and local bridge downloads use their normal connections. Proxy mode still requires a valid endpoint and has no automatic direct fallback.
 - Docker Compose services with restart policies, health checks, private persistent data, and an optional Cloudflare Tunnel service.
 
 ## Repository layout
@@ -23,7 +23,7 @@ The VPS passed all 23 automated tests, a real ShowPay login/balance check throug
 |---|---|
 | `bot/` | Existing bot handlers and MPIN/PDF support |
 | `miniapp/` | Interface, authenticated API, command bridge, reports and tests |
-| `runtime/` | Environment configuration, proxy routing, service startup and health checks |
+| `runtime/` | Environment configuration, direct/proxy routing, service startup and health checks |
 | `deploy/` | Deployment instructions and tunnel configuration template |
 | `test/` | Production configuration and routing tests using synthetic data |
 
@@ -33,13 +33,13 @@ The deployment copy replaces inline secrets and PC-specific storage locations wi
 
 Use Node.js 22 or newer. Run `npm ci --ignore-scripts`, then `npm test`. The test runner supplies synthetic credentials and mocked site responses; it does not poll Telegram or log into real wallet accounts.
 
-The package passed 23 tests covering existing commands, MPIN/OCR flow, session recovery, authorization, private bridge, shared writes, reports, retries, proxy routing, refusal of direct API fallback, and production configuration.
+The package passed 25 tests covering existing commands, MPIN/OCR flow, session recovery, authorization, private bridge, shared writes, reports, retries, explicit direct routing, proxy routing, refusal of automatic direct fallback, and production configuration.
 
 ## Deploy
 
 Follow [the VPS and Cloudflare setup](deploy/DEPLOYMENT.md). Real bot/proxy credentials belong only in `private/config.env` on the VPS. Existing wallet and authorization files must be transferred directly to private server storage, never through GitHub. No live credentials or user account files are included in this repository.
 
-A running VPS, active proxy traffic allowance, Cloudflare HTTPS configuration, private data migration, and a successful remote smoke test are required before the PC can be switched off. A mobile proxy can rotate or fail; a successful connection is not a guarantee that third-party sites will always accept it.
+A running VPS, Cloudflare HTTPS configuration, private data migration, and a successful remote smoke test are required before the PC can be switched off. Set `SITE_NETWORK_MODE=direct` to use the VPS IPv4 without a site proxy. To use a proxy, set `SITE_NETWORK_MODE=proxy` and supply `SITE_PROXY_URL`. An omitted mode keeps the older proxy-required behavior. Target sites can still reject credentials, rate-limit, or challenge requests in either mode.
 
 ## Current limits
 
