@@ -5,7 +5,7 @@ function checkConfig(){
   const config=require('./config.cjs');
   if(!/^\d+:[A-Za-z0-9_-]+$/.test(config.botToken))throw new Error('BOT_TOKEN format is invalid');
   if(!config.adminPassword)throw new Error('ADMIN_PASSWORD is required');
-  require('./site-http.cjs').parseProxy(process.env.SITE_PROXY_URL);
+  require('./site-http.cjs').parseNetwork(process.env.SITE_NETWORK_MODE,process.env.SITE_PROXY_URL);
   if(process.env.MINIAPP_MODE!=='telegram')throw new Error('Production requires MINIAPP_MODE=telegram');
   let origin;try{origin=new URL(process.env.PUBLIC_ORIGIN);}catch{throw new Error('PUBLIC_ORIGIN is required');}
   if(origin.protocol!=='https:'||origin.username||origin.password||origin.pathname!=='/'||origin.search||origin.hash)throw new Error('PUBLIC_ORIGIN must be an HTTPS origin');
