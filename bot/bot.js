@@ -1,5 +1,6 @@
 const { Telegraf, Markup } = require('telegraf');
 const axios = require('../runtime/site-http.cjs');
+const { isTemporaryError, retryAt, retryTemporaryBalances } = require('../runtime/balance-retry.cjs');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -175,9 +176,10 @@ function getHeaders(site) {
     return h;
 }
 
-async function checkSiteWithRetry(siteId, phone, password) {
+async function checkSiteWithRetry(siteId, phone, password, options) {
     var site = SITES[siteId];
-    for (var attempt = 1; attempt <= 3; attempt++) {
+    var maxAttempts = options && options.singleAttempt ? 1 : 3;
+    for (var attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
             var loginRes = await axios.post(
                 site.api + '/app/auth/login',
@@ -186,9 +188,9 @@ async function checkSiteWithRetry(siteId, phone, password) {
             );
             if (loginRes.data.code !== 200) {
                 var msg = loginRes.data.message || loginRes.data.msg || 'Sync Failed';
-                var isRetryable = msg.toLowerCase().includes('try again') || msg.toLowerCase().includes('busy') || msg.toLowerCase().includes('later');
-                if (isRetryable && attempt < 3) { await new Promise(r => setTimeout(r, 5000 * attempt)); continue; }
-                throw new Error(msg);
+                var loginError = new Error(msg);
+                loginError.response = loginRes;
+                throw loginError;
             }
             var loginData = loginRes.data.data;
             var ts = Date.now();
@@ -197,22 +199,30 @@ async function checkSiteWithRetry(siteId, phone, password) {
             var h = getHeaders(site);
             h['signature'] = md5(n + "&" + loginData.sessionKey);
             var balRes = await axios.post(site.api + '/app/user/account/wallet', body, { timeout: 12000, headers: h });
+            if (balRes.data.code !== 200) {
+                var walletError = new Error(balRes.data.message || balRes.data.msg || 'Balance unavailable');
+                walletError.response = balRes;
+                throw walletError;
+            }
             var bal = (balRes.data.data && balRes.data.data.xtoken !== undefined) ? balRes.data.data.xtoken : (balRes.data.data ? balRes.data.data.balance : 'N/A');
+            if (bal === null || bal === undefined || bal === '' || !Number.isFinite(Number(bal)) || Number(bal) < 0) throw new Error('Balance unavailable');
             return { success: true, siteId, siteName: site.name, loginData, bal, phone };
         } catch (e) {
             var errMsg = 'Error';
             if (e.code === 'ECONNABORTED' || (e.message && e.message.toLowerCase().includes('timeout'))) errMsg = 'Timeout';
             else if (e.response && e.response.data && (e.response.data.message || e.response.data.msg)) errMsg = e.response.data.message || e.response.data.msg;
             else if (e.message) errMsg = e.message;
-            var shouldRetry = errMsg.toLowerCase().includes('try again') || errMsg.toLowerCase().includes('busy') || errMsg.toLowerCase().includes('later') || errMsg.toLowerCase().includes('timeout');
-            if (shouldRetry && attempt < 3) { await new Promise(r => setTimeout(r, 5000 * attempt)); continue; }
-            return { success: false, siteId, siteName: site.name, errMsg, phone };
+            var httpStatus = e.response && e.response.status;
+            var shouldRetry = isTemporaryError(errMsg, httpStatus);
+            var retryTime = retryAt(e.response);
+            if (shouldRetry && attempt < maxAttempts) { await new Promise(r => setTimeout(r, Math.max(5000 * attempt, retryTime - Date.now()))); continue; }
+            return { success: false, siteId, siteName: site.name, errMsg, phone, retryable: shouldRetry, httpStatus, retryAt: retryTime };
         }
     }
     return { success: false, siteId, siteName: SITES[siteId].name, errMsg: 'Failed', phone };
 }
 
-async function runGroupedChecks(entries, progressCallback, chatId) {
+async function runGroupedChecks(entries, progressCallback, chatId, options) {
     var groups = {};
     entries.forEach(function (e) {
         if (!groups[e.siteId]) groups[e.siteId] = [];
@@ -230,13 +240,13 @@ async function runGroupedChecks(entries, progressCallback, chatId) {
         var chunkSize = 5; 
         for (var i = 0; i < accounts.length; i += chunkSize) {
             // Check if /restart was called (abort signal)
-            if (chatId && (!userState[chatId] || !userState[chatId].checkingBalance)) {
+            if ((options && options.isCancelled && options.isCancelled()) || (chatId && (!userState[chatId] || !userState[chatId].checkingBalance))) {
                 break;
             }
             
             var chunk = accounts.slice(i, i + chunkSize);
             var chunkPromises = chunk.map(async acc => {
-                var result = await checkSiteWithRetry(acc.siteId, acc.phone, acc.password);
+                var result = await checkSiteWithRetry(acc.siteId, acc.phone, acc.password, options);
                 result.wKey = acc.wKey;
                 completedCount++;
                 return result;
@@ -331,6 +341,8 @@ bot.command('balance', async function (ctx) {
     }
     clearState(ctx);
     userState[ctx.chat.id] = { checkingBalance: true };
+    var balanceState = userState[ctx.chat.id];
+    var balanceCancelled = () => userState[ctx.chat.id] !== balanceState || !balanceState.checkingBalance;
 
     var wallets = loadWallets();
     var keys = Object.keys(wallets);
@@ -353,10 +365,12 @@ bot.command('balance', async function (ctx) {
                 var text = `⏳ *Live Balance Progress:*\n\n✅ Check ho gaye: ${done}\n🕒 Baki hain: ${remaining}\n📊 Total Accounts: ${total}`;
                 await ctx.telegram.editMessageText(ctx.chat.id, statusMsg.message_id, undefined, text, { parse_mode: 'Markdown' }).catch(() => {});
             }
-        }, ctx.chat.id);
+        }, ctx.chat.id, { singleAttempt: true, isCancelled: balanceCancelled });
+        if (balanceCancelled()) return;
 
         var successList = results.filter(r => r.success).map(r => ({ ...r, f: formatBal(r.bal) }));
         var failList = results.filter(r => !r.success);
+        var retryList = failList.filter(r => r.retryable && isTemporaryError(r.errMsg, r.httpStatus));
         successList.sort((a, b) => b.f.num - a.f.num);
 
         successList.forEach(r => {
@@ -369,8 +383,10 @@ bot.command('balance', async function (ctx) {
         var normalBal = successList.filter(r => r.f.num >= 5 && r.f.num < 1000);
 
         var summary = `✅ *${successList.length}/${results.length} accounts check ho gaye!*`;
+        if (retryList.length) summary = '📊 *Pehla result*\n' + summary;
         if (highBal.length > 0) summary += `\n🏆 *${highBal.length} HIGH BALANCE (1000+) mila!*`;
         if (failList.length > 0) summary += `\n❌ ${failList.length} failed`;
+        if (retryList.length) summary += `\n⏳ ${retryList.length} temporary-error entries result ke baad dobara check hongi.`;
         await ctx.telegram.editMessageText(ctx.chat.id, statusMsg.message_id, undefined, summary, { parse_mode: 'Markdown' }).catch(() => { });
 
         if (highBal.length > 0) {
@@ -380,7 +396,7 @@ bot.command('balance', async function (ctx) {
 
             var alertMsg = '🚨 *HIGH BALANCE ALERT* 🚨\n\n';
             highBal.forEach(r => { alertMsg += `🌐 *${r.siteName}*\n📱 \`${r.phone}\`\n💰 ${r.f.text}\n\n`; });
-            await ctx.reply(alertMsg, { parse_mode: 'Markdown' });
+            await splitAndSend(ctx, alertMsg);
         }
 
         if (normalBal.length > 0) {
@@ -396,11 +412,58 @@ bot.command('balance', async function (ctx) {
             failList.forEach(r => { failMsg += `• *${r.siteName}* \`${r.phone}\` — ${r.errMsg}\n`; });
             await splitAndSend(ctx, failMsg);
         }
+
+        if (retryList.length && !balanceCancelled()) {
+            var retryMsg = await ctx.reply(`🔁 *Dobara check shuru...*\n⏳ ${retryList.length} temporary-error entries.\nPehle successful accounts dobara check nahi honge.`, { parse_mode: 'Markdown' });
+            var lastRetryEdit = 0;
+            var retried = await retryTemporaryBalances({
+                entries, results, isCancelled: balanceCancelled,
+                check: async entry => {
+                    var current = loadWallets()[entry.wKey];
+                    if (!current || current.phone !== entry.phone || current.siteId !== entry.siteId) return { success: false, siteName: SITES[entry.siteId].name, errMsg: 'Entry badal gayi; dobara /balance chalayein.', retryable: false };
+                    var checked = await checkSiteWithRetry(current.siteId, current.phone, current.password, { singleAttempt: true });
+                    checked.checkedPassword = current.password;
+                    return checked;
+                },
+                onProgress: async (done, total) => {
+                    if (Date.now() - lastRetryEdit < 2000 && done !== total) return;
+                    lastRetryEdit = Date.now();
+                    await ctx.telegram.editMessageText(ctx.chat.id, retryMsg.message_id, undefined, `🔁 *Dobara check:* ${done}/${total}\n🕒 Baki: ${total - done}`, { parse_mode: 'Markdown' }).catch(() => {});
+                }
+            });
+            if (!retried.cancelled) {
+                var currentWallets = loadWallets();
+                var changed = false;
+                retried.rechecked.forEach(r => {
+                    var row = currentWallets[r.wKey];
+                    if (r.success && row && row.phone === r.phone && row.password === r.checkedPassword) {
+                        row.userId = r.loginData.userId; row.sessionKey = r.loginData.sessionKey; row.loginToken = r.loginData.loginToken; changed = true;
+                    }
+                    delete r.checkedPassword;
+                });
+                if (changed) saveWallets(currentWallets);
+                var finalSuccess = retried.results.filter(r => r.success).length;
+                var finalFailed = retried.results.length - finalSuccess;
+                var recovered = retried.rechecked.filter(r => r.success).length;
+                var finalSummary = `✅ *Final result: ${finalSuccess}/${retried.results.length} accounts check ho gaye!*\n🔁 Dobara check se ${recovered} balance mile.\n❌ ${finalFailed} failed`;
+                await ctx.telegram.editMessageText(ctx.chat.id, statusMsg.message_id, undefined, finalSummary, { parse_mode: 'Markdown' }).catch(() => {});
+                await ctx.reply(finalSummary, { parse_mode: 'Markdown' });
+                var retryReport = '🔁 *Dobara check ka result:*\n━━━━━━━━━━━━━━━━━\n';
+                retried.rechecked.forEach(r => {
+                    var siteName = SITES[r.siteId].name;
+                    if (r.success) { var formatted = formatBal(r.bal); retryReport += `${formatted.emoji} *${siteName}*\n📱 \`${r.phone}\` | 💰 ${formatted.text}\n\n`; }
+                    else retryReport += `❌ *${siteName}*\n📱 \`${r.phone}\` — ${r.errMsg}\n\n`;
+                });
+                await splitAndSend(ctx, retryReport);
+            } else {
+                await ctx.telegram.editMessageText(ctx.chat.id, retryMsg.message_id, undefined, '⏹️ Dobara check rok diya gaya. Naya /balance chala sakte hain.').catch(() => {});
+            }
+        }
     } catch (e) {
         await ctx.reply('❌ Balance check mein error: ' + e.message).catch(() => { });
     }
     
-    if (userState[ctx.chat.id]) userState[ctx.chat.id].checkingBalance = false;
+    if (userState[ctx.chat.id] === balanceState) balanceState.checkingBalance = false;
     await ctx.reply('━━━━━━━━━━━━━━━━━\n' + MENU_TEXT, { parse_mode: 'Markdown' });
 });
 
