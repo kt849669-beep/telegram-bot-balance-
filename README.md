@@ -2,9 +2,13 @@
 
 The existing 14-site Telegram bot and its matching white/black Mini App, packaged for persistent Linux VPS hosting with Cloudflare HTTPS and explicit direct or proxy connections to site APIs.
 
-**Deployment status (29 September 2026):** bot and Mini App deployed on a Linux VPS with a dedicated Cloudflare Tunnel at [miniapp.app-showpay.in](https://miniapp.app-showpay.in/). Outgoing site requests use direct IPv4 with `SITE_NETWORK_MODE=direct`. Open the Mini App through the Telegram bot's menu using an authorized Telegram account. GitHub stores the code; the VPS runs the services.
+**Deployment status (30 September 2026):** bot and Mini App deployed on a Linux VPS with a dedicated Cloudflare Tunnel at [miniapp.app-showpay.in](https://miniapp.app-showpay.in/). Outgoing site requests use direct IPv4 with `SITE_NETWORK_MODE=direct`. Open the Mini App through the Telegram bot's menu using an authorized Telegram account. GitHub stores the code; the VPS runs the services.
 
-An initial direct test with one saved account per site passed all 14 logins and balance reads. After deployment, the original `/balance` handler completed a 70-account sample with 40 successful checks and 30 failures. A separate one-attempt diagnostic with three accounts in flight received 9 successful balances, 60 temporary application errors and one account-attempt warning. Neither test detected a Cloudflare challenge. This verifies direct connectivity, not error-free bulk checking; further account retries were stopped after the warning. The routing change passes 25 automated checks. Existing bot handlers, saved data, other VPS applications, and the main domain's DNS configuration are preserved.
+An initial direct test with one saved account per site passed all 14 logins and balance reads. Bulk checks also received temporary application errors despite HTTP 200 responses; no Cloudflare challenges were detected in those tests. Direct connectivity does not guarantee that a site will accept every account or request.
+
+`/balance` now shows its first full result before retrying temporary failures such as “Please try again later”. Successful accounts and credential/account-lockout errors are excluded. The single deferred pass waits at least eight seconds, spaces retries for each site by eight seconds, respects `Retry-After`, and permits at most three simultaneous retry requests in the bot/command-bridge process. It then sends the combined final count and updated results for the retried accounts. Persistent failures remain visible; they do not loop indefinitely. The same handler runs in Telegram and the Mini App commands view. The dashboard keeps its existing job scheduler.
+
+A live VPS sample on 30 September used three saved accounts each on OlaPay, ATG Game and OPay. The first report contained 3 successful checks and 6 “Please try again later” responses. Only those 6 entries were retried, beginning eight seconds after the first report; the final result was 9/9 successful. No account warnings or Cloudflare challenges occurred in that sample. The diagnostic used the deployed handler and real site APIs with replies and session updates held in memory; it did not send Telegram messages or modify stored account files. All 34 automated checks also passed inside the deployment image.
 
 ## Included
 
@@ -33,7 +37,7 @@ The deployment copy replaces inline secrets and PC-specific storage locations wi
 
 Use Node.js 22 or newer. Run `npm ci --ignore-scripts`, then `npm test`. The test runner supplies synthetic credentials and mocked site responses; it does not poll Telegram or log into real wallet accounts.
 
-The package passed 25 tests covering existing commands, MPIN/OCR flow, session recovery, authorization, private bridge, shared writes, reports, retries, explicit direct routing, proxy routing, refusal of automatic direct fallback, and production configuration.
+The package passed 34 tests covering existing commands, MPIN/OCR flow, session recovery, authorization, private bridge, shared writes, reports, deferred retry ordering and pacing, cancellation, concurrent command limits, credential edits during retries, large Telegram reports, explicit direct routing, proxy routing, refusal of automatic direct fallback, and production configuration.
 
 ## Deploy
 
